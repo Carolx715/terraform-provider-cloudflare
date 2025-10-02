@@ -2,12 +2,14 @@ package r2_bucket_lifecycle
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
 
 type listSortModifier struct {
@@ -36,46 +38,43 @@ func (m listSortModifier) PlanModifyList(ctx context.Context, req planmodifier.L
 		return
 	}
 
-	// Get the elements from the plan
-	var planElements []attr.Value
+	// Get the elements from the plan - use concrete type basetypes.ObjectValue
+	var planElements []basetypes.ObjectValue
 	diags := req.PlanValue.ElementsAs(ctx, &planElements, false)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// // Sort the elements
-	// sortedElements := m.sortElements(ctx, planElements, &resp.Diagnostics)
-	// if resp.Diagnostics.HasError() {
-	// 	return
-	// }
+	// Sort the elements
+	sortedElements := m.sortElements(ctx, planElements, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
-	// // Create a new list with sorted elements
-	// sortedList, diags := types.ListValue(req.PlanValue.ElementType(ctx), sortedElements)
-	// resp.Diagnostics.Append(diags...)
-	// if resp.Diagnostics.HasError() {
-	// 	return
-	// }
+	// Convert back to []attr.Value for creating the new list
+	sortedAttrValues := make([]attr.Value, len(sortedElements))
+	for i, elem := range sortedElements {
+		sortedAttrValues[i] = elem
+	}
 
-	// resp.PlanValue = req.PlanValue
+	// Create a new list with sorted elements
+	sortedList, diags := types.ListValue(req.PlanValue.ElementType(ctx), sortedAttrValues)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.PlanValue = sortedList
 }
 
-func (m listSortModifier) sortElements(ctx context.Context, elements []attr.Value, diags *diag.Diagnostics) []attr.Value {
+func (m listSortModifier) sortElements(ctx context.Context, elements []basetypes.ObjectValue, diags *diag.Diagnostics) []basetypes.ObjectValue {
 	// Create a sortable slice
 	sortableElements := make([]sortableElement, len(elements))
 
 	for i, elem := range elements {
-		obj, ok := elem.(types.Object)
-		if !ok {
-			diags.AddError(
-				"Invalid Element Type",
-				"Expected object type in list",
-			)
-			return elements
-		}
-
-		// Extract the sort key
-		sortKey := obj.Attributes()[m.sortByAttribute]
+		// Extract the sort key from the object's attributes
+		sortKey := elem.Attributes()[m.sortByAttribute]
 		if sortKey == nil {
 			diags.AddWarning(
 				"Missing Sort Attribute",
@@ -85,7 +84,7 @@ func (m listSortModifier) sortElements(ctx context.Context, elements []attr.Valu
 			continue
 		}
 
-		// Convert to string for sorting (adjust based on your needs)
+		// Convert to string for sorting
 		sortKeyStr := m.extractSortKey(sortKey)
 		sortableElements[i] = sortableElement{
 			value:   elem,
@@ -99,7 +98,7 @@ func (m listSortModifier) sortElements(ctx context.Context, elements []attr.Valu
 	})
 
 	// Extract sorted values
-	result := make([]attr.Value, len(sortableElements))
+	result := make([]basetypes.ObjectValue, len(sortableElements))
 	for i, se := range sortableElements {
 		result[i] = se.value
 	}
@@ -108,19 +107,18 @@ func (m listSortModifier) sortElements(ctx context.Context, elements []attr.Valu
 }
 
 func (m listSortModifier) extractSortKey(value attr.Value) string {
-	// Handle different types - extend as needed
 	switch v := value.(type) {
-	case types.String:
+	case basetypes.StringValue:
 		if v.IsNull() || v.IsUnknown() {
 			return ""
 		}
 		return v.ValueString()
-	case types.Int64:
+	case basetypes.Int64Value:
 		if v.IsNull() || v.IsUnknown() {
 			return ""
 		}
-		return string(rune(v.ValueInt64())) // Simple conversion, might need better handling
-	case types.Number:
+		return fmt.Sprint(v.ValueInt64())
+	case basetypes.NumberValue:
 		if v.IsNull() || v.IsUnknown() {
 			return ""
 		}
@@ -131,6 +129,6 @@ func (m listSortModifier) extractSortKey(value attr.Value) string {
 }
 
 type sortableElement struct {
-	value   attr.Value
+	value   basetypes.ObjectValue
 	sortKey string
 }
