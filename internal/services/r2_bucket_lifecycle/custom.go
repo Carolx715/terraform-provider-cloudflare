@@ -13,11 +13,9 @@ import (
 )
 
 type listSortModifier struct {
-	// The attribute name to sort by
 	sortByAttribute string
 }
 
-// SortListByAttribute creates a plan modifier that sorts list elements by a specific attribute
 func SortListByAttribute(attributeName string) planmodifier.List {
 	return listSortModifier{
 		sortByAttribute: attributeName,
@@ -38,7 +36,7 @@ func (m listSortModifier) PlanModifyList(ctx context.Context, req planmodifier.L
 		return
 	}
 
-	// Get the elements from the plan - use concrete type basetypes.ObjectValue
+	// Sort the plan value
 	var planElements []basetypes.ObjectValue
 	diags := req.PlanValue.ElementsAs(ctx, &planElements, false)
 	resp.Diagnostics.Append(diags...)
@@ -46,29 +44,94 @@ func (m listSortModifier) PlanModifyList(ctx context.Context, req planmodifier.L
 		return
 	}
 
-	// Sort the elements
-	sortedElements := m.sortElements(ctx, planElements, &resp.Diagnostics)
+	sortedPlanElements := m.sortElements(ctx, planElements, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Convert back to []attr.Value for creating the new list
-	sortedAttrValues := make([]attr.Value, len(sortedElements))
-	for i, elem := range sortedElements {
-		sortedAttrValues[i] = elem
+	// Convert to []attr.Value
+	sortedPlanAttrValues := make([]attr.Value, len(sortedPlanElements))
+	for i, elem := range sortedPlanElements {
+		sortedPlanAttrValues[i] = elem
 	}
 
-	// Create a new list with sorted elements
-	sortedList, diags := types.ListValue(req.PlanValue.ElementType(ctx), sortedAttrValues)
+	// Create sorted plan list
+	sortedPlanList, diags := types.ListValue(req.PlanValue.ElementType(ctx), sortedPlanAttrValues)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	resp.PlanValue = sortedList
+	resp.PlanValue = sortedPlanList
+
+	// IMPORTANT: Also sort the config value if it exists
+	// This ensures Terraform compares sorted plan against sorted config
+	if !req.ConfigValue.IsNull() && !req.ConfigValue.IsUnknown() {
+		var configElements []basetypes.ObjectValue
+		diags := req.ConfigValue.ElementsAs(ctx, &configElements, false)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		sortedConfigElements := m.sortElements(ctx, configElements, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// Convert to []attr.Value
+		sortedConfigAttrValues := make([]attr.Value, len(sortedConfigElements))
+		for i, elem := range sortedConfigElements {
+			sortedConfigAttrValues[i] = elem
+		}
+
+		// Create sorted config list
+		sortedConfigList, diags := types.ListValue(req.ConfigValue.ElementType(ctx), sortedConfigAttrValues)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		req.ConfigValue = sortedConfigList
+	}
+
+	// IMPORTANT: Also sort the state value if it exists
+	// This ensures consistency across all values
+	if !req.StateValue.IsNull() && !req.StateValue.IsUnknown() {
+		var stateElements []basetypes.ObjectValue
+		diags := req.StateValue.ElementsAs(ctx, &stateElements, false)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		sortedStateElements := m.sortElements(ctx, stateElements, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// Convert to []attr.Value
+		sortedStateAttrValues := make([]attr.Value, len(sortedStateElements))
+		for i, elem := range sortedStateElements {
+			sortedStateAttrValues[i] = elem
+		}
+
+		// Create sorted state list
+		sortedStateList, diags := types.ListValue(req.StateValue.ElementType(ctx), sortedStateAttrValues)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		req.StateValue = sortedStateList
+	}
 }
 
 func (m listSortModifier) sortElements(ctx context.Context, elements []basetypes.ObjectValue, diags *diag.Diagnostics) []basetypes.ObjectValue {
+	if len(elements) == 0 {
+		return elements
+	}
+
 	// Create a sortable slice
 	sortableElements := make([]sortableElement, len(elements))
 
@@ -78,7 +141,7 @@ func (m listSortModifier) sortElements(ctx context.Context, elements []basetypes
 		if sortKey == nil {
 			diags.AddWarning(
 				"Missing Sort Attribute",
-				"Element missing attribute: "+m.sortByAttribute,
+				fmt.Sprintf("Element %d missing attribute: %s", i, m.sortByAttribute),
 			)
 			sortableElements[i] = sortableElement{value: elem, sortKey: ""}
 			continue
@@ -92,8 +155,8 @@ func (m listSortModifier) sortElements(ctx context.Context, elements []basetypes
 		}
 	}
 
-	// Sort
-	sort.Slice(sortableElements, func(i, j int) bool {
+	// Sort (stable sort to maintain order for equal keys)
+	sort.SliceStable(sortableElements, func(i, j int) bool {
 		return sortableElements[i].sortKey < sortableElements[j].sortKey
 	})
 
@@ -107,6 +170,7 @@ func (m listSortModifier) sortElements(ctx context.Context, elements []basetypes
 }
 
 func (m listSortModifier) extractSortKey(value attr.Value) string {
+	// Handle different types
 	switch v := value.(type) {
 	case basetypes.StringValue:
 		if v.IsNull() || v.IsUnknown() {
@@ -117,7 +181,8 @@ func (m listSortModifier) extractSortKey(value attr.Value) string {
 		if v.IsNull() || v.IsUnknown() {
 			return ""
 		}
-		return fmt.Sprint(v.ValueInt64())
+		// Format with leading zeros for proper lexicographic sorting
+		return fmt.Sprintf("%020d", v.ValueInt64())
 	case basetypes.NumberValue:
 		if v.IsNull() || v.IsUnknown() {
 			return ""
